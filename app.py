@@ -13,7 +13,7 @@ SPOONACULAR_API_KEY = os.getenv("SPOONACULAR_API_KEY", "")
 
 # ---------- Helper Functions ----------
 def analyze_user_text(user_text):
-    return {"intent":"find_recipe","ingredients":[user_text],"dish":None,"exclude":[],"message":"Based on your ingredients, you can try these dishes:"}
+    return {"intent": "find_recipe", "ingredients": [user_text], "dish": None, "exclude": [], "message": "Based on your ingredients, you can try these dishes:"}
 
 def spoon_search_by_ingredients(ingredients, number=3):
     url = f"https://api.spoonacular.com/recipes/findByIngredients?ingredients={','.join(ingredients)}&number={number}&apiKey={SPOONACULAR_API_KEY}"
@@ -28,7 +28,10 @@ def spoon_get_recipe_information(recipe_id):
 def format_recipe(info):
     title = info.get("title", "Recipe")
     img = info.get("image", "")
-    steps = [s["step"] for s in info.get("analyzedInstructions", [{}])[0].get("steps", [])]
+    steps = []
+    for section in info.get("analyzedInstructions", []):
+        for step in section.get("steps", []):
+            steps.append(step.get("step"))
     steps_text = "\n".join([f"{i+1}. {s}" for i, s in enumerate(steps)]) or "No steps found."
     return f"**{title}**\n\n![img]({img})\n\n{steps_text}"
 
@@ -50,28 +53,37 @@ if "generated" not in st.session_state:
 if "results" not in st.session_state:
     st.session_state["results"] = []
 
+# ---------- Chat Column ----------
 with col_chat:
     st.markdown("<div class='chat-box'>", unsafe_allow_html=True)
     st.title("💬 Chat with Dobby")
-    user_input = st.text_input("Type your question or ingredients...", key="input", placeholder="e.g. I have potatoes and beef")
-    send_btn = st.button("Send", key="send")
 
-    if send_btn and user_input:
-        st.session_state["past"].append(user_input)
-        parsed = analyze_user_text(user_input)
-        st.session_state["generated"].append(f"Dobby: {parsed['message']}")
+    # Chat area (scroll)
+    chat_container = st.container(height=500)
+    with chat_container:
+        for i in range(len(st.session_state["generated"])):
+            message(st.session_state["past"][i], is_user=True, key=f"user_{i}")
+            message(st.session_state["generated"][i], key=f"bot_{i}")
 
-        # Fetch recipes
-        try:
-            data = spoon_search_by_ingredients(parsed["ingredients"])
-            st.session_state["results"] = data
-        except Exception as e:
-            st.session_state["generated"].append(f"⚠️ Error fetching recipes: {e}")
+    # Input box + Send button inside chat
+    with st.container():
+        user_input = st.text_input("Type your question or ingredients...", key="input", placeholder="e.g. I have potatoes and beef")
+        send_btn = st.button("Send", key="send")
 
-    # Render Chat Messages
-    for i in range(len(st.session_state["generated"])):
-        message(st.session_state["past"][i], is_user=True, key=f"user_{i}")
-        message(st.session_state["generated"][i], key=f"bot_{i}")
+        if send_btn and user_input:
+            st.session_state["past"].append(user_input)
+            parsed = analyze_user_text(user_input)
+            st.session_state["generated"].append(f"Dobby: {parsed['message']}")
+
+            # Fetch recipes safely
+            try:
+                data = spoon_search_by_ingredients(parsed["ingredients"])
+                if isinstance(data, list):
+                    st.session_state["results"] = [r for r in data if isinstance(r, dict)]
+                else:
+                    st.session_state["results"] = []
+            except Exception as e:
+                st.session_state["generated"].append(f"⚠️ Error fetching recipes: {e}")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -90,7 +102,7 @@ with col_result:
             try:
                 info = spoon_get_recipe_information(rid)
                 st.markdown(format_recipe(info))
-            except:
+            except Exception:
                 st.markdown("⚠️ Could not load full recipe info.")
             st.markdown("---")
     st.markdown("</div>", unsafe_allow_html=True)
