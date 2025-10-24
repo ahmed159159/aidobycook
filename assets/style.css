@@ -1,53 +1,52 @@
-/* خلفية عامة داكنة */
 body {
     background-color: #1e1e2f;
     color: #f1f1f1;
 }
 
-/* صندوق الشات */
+/* chat box */
 .chat-box {
     background-color: #2c2f3f;
     border-radius: 15px;
-    padding: 20px;
+    padding: 15px;
     margin-top: 10px;
-    height: 80vh;
-    overflow-y: auto;
+    height: 85vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
     box-shadow: 0 0 10px #00000066;
 }
 
-/* صندوق النتائج */
+/* results box */
 .results-box {
     background-color: #252839;
     border-radius: 15px;
     padding: 15px;
     margin-top: 10px;
-    height: 80vh;
+    height: 85vh;
     overflow-y: auto;
     box-shadow: 0 0 10px #00000066;
 }
 
-/* رسائل الشات */
+/* send button */
+button[kind="primary"], button[kind="secondary"] {
+    background-color: #5865F2 !important;
+    color: white !important;
+    border-radius: 10px !important;
+}
+
+/* chat messages */
 .stChatMessage {
     border-radius: 10px;
     padding: 10px;
     margin-bottom: 8px;
 }
-
 .stChatMessage.user {
     background-color: #404258;
     color: #fff;
     text-align: right;
 }
-
 .stChatMessage.bot {
     background-color: #323449;
     color: #eee;
     text-align: left;
-}
-
-/* زر الإرسال */
-button[kind="primary"] {
-    background-color: #5865F2 !important;
-    color: white !important;
-    border-radius: 10px !important;
 }
