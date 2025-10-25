@@ -3,106 +3,133 @@ import json
 import requests
 import streamlit as st
 from dotenv import load_dotenv
-from streamlit_chat import message
+from urllib.parse import urlencode
 
-# ---------- Load Environment ----------
+# ========== إعداد المفاتيح ==========
 load_dotenv()
 FIREWORKS_API_KEY = os.getenv("FIREWORKS_API_KEY", "")
 FIREWORKS_MODEL = os.getenv("FIREWORKS_MODEL", "accounts/ahmed159/deployedModels/dobby-unhinged-llama-3-3-70b-new-vdw6j81e")
 SPOONACULAR_API_KEY = os.getenv("SPOONACULAR_API_KEY", "")
 
-# ---------- Helper Functions ----------
-def analyze_user_text(user_text):
-    return {"intent": "find_recipe", "ingredients": [user_text], "dish": None, "exclude": [], "message": "Based on your ingredients, you can try these dishes:"}
+# ========== إعدادات API ==========
+FIREWORKS_URL = "https://api.fireworks.ai/inference/v1/chat/completions"
+SPOON_BASE = "https://api.spoonacular.com"
 
-def spoon_search_by_ingredients(ingredients, number=3):
-    url = f"https://api.spoonacular.com/recipes/findByIngredients?ingredients={','.join(ingredients)}&number={number}&apiKey={SPOONACULAR_API_KEY}"
-    r = requests.get(url)
+# ========== دوال Fireworks ==========
+def call_fireworks_chat(system_prompt, user_prompt, temperature=0.6):
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {FIREWORKS_API_KEY}"
+    }
+    payload = {
+        "model": FIREWORKS_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "max_tokens": 600,
+        "temperature": temperature
+    }
+    r = requests.post(FIREWORKS_URL, headers=headers, json=payload)
+    r.raise_for_status()
+    data = r.json()
+    return data["choices"][0]["message"]["content"].strip()
+
+# ========== تحليل سؤال المستخدم ==========
+def analyze_user_text(user_text):
+    system_prompt = """
+You are Dobby, a helpful cooking assistant.
+Analyze user's question and return a compact JSON with:
+- intent: "find_recipe", "specific_recipe", or "modify_recipe"
+- ingredients: array of ingredients (or empty)
+- dish: dish name (if any)
+- exclude: ingredients to exclude
+- message: short friendly English line
+Return JSON only.
+"""
+    try:
+        result = call_fireworks_chat(system_prompt, user_text, temperature=0.2)
+        cleaned = result.strip("```json").strip("```").strip()
+        return json.loads(cleaned)
+    except Exception:
+        return {"intent":"find_recipe","ingredients":[user_text],"exclude":[],"dish":None,"message":"Let’s find something tasty!"}
+
+# ========== Spoonacular ==========
+def spoon_search_by_ingredients(ingredients, exclude=None, number=4):
+    ing_csv = ",".join(ingredients)
+    params = {
+        "ingredients": ing_csv,
+        "number": number,
+        "ranking": 1,
+        "apiKey": SPOONACULAR_API_KEY
+    }
+    if exclude:
+        params["excludeIngredients"] = ",".join(exclude)
+    r = requests.get(f"{SPOON_BASE}/recipes/findByIngredients?{urlencode(params)}")
+    r.raise_for_status()
     return r.json()
 
 def spoon_get_recipe_information(recipe_id):
-    url = f"https://api.spoonacular.com/recipes/{recipe_id}/information?apiKey={SPOONACULAR_API_KEY}"
-    r = requests.get(url)
+    url = f"{SPOON_BASE}/recipes/{recipe_id}/information"
+    params = {"apiKey": SPOONACULAR_API_KEY}
+    r = requests.get(url, params=params)
+    r.raise_for_status()
     return r.json()
 
-def format_recipe(info):
-    title = info.get("title", "Recipe")
-    img = info.get("image", "")
-    steps = []
-    for section in info.get("analyzedInstructions", []):
-        for step in section.get("steps", []):
-            steps.append(step.get("step"))
-    steps_text = "\n".join([f"{i+1}. {s}" for i, s in enumerate(steps)]) or "No steps found."
-    return f"**{title}**\n\n![img]({img})\n\n{steps_text}"
-
-# ---------- Page Layout ----------
+# ========== واجهة Streamlit ==========
 st.set_page_config(page_title="🍳 Dobby Cooking Assistant", layout="wide")
 
-# Apply CSS style
-with open("assets/style.css") as css:
-    st.markdown(f"<style>{css.read()}</style>", unsafe_allow_html=True)
+with open("assets/style.css") as f:
+    st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
-# ---------- Columns ----------
-col_chat, col_result = st.columns([2, 1])
+st.markdown("<h1 class='title'>🍳 Dobby Cooking Assistant</h1>", unsafe_allow_html=True)
 
-# Session State
-if "past" not in st.session_state:
-    st.session_state["past"] = []
-if "generated" not in st.session_state:
-    st.session_state["generated"] = []
-if "results" not in st.session_state:
-    st.session_state["results"] = []
+# تقسيم الشاشة
+chat_col, results_col = st.columns([1.5, 1])
 
-# ---------- Chat Column ----------
-with col_chat:
-    st.markdown("<div class='chat-box'>", unsafe_allow_html=True)
-    st.title("💬 Chat with Dobby")
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
-    # Chat area (scroll)
-    chat_container = st.container(height=500)
-    with chat_container:
-        for i in range(len(st.session_state["generated"])):
-            message(st.session_state["past"][i], is_user=True, key=f"user_{i}")
-            message(st.session_state["generated"][i], key=f"bot_{i}")
+# ========== قسم الشات ==========
+with chat_col:
+    st.markdown("<div class='chatbox'>", unsafe_allow_html=True)
 
-    # Input box + Send button inside chat
-    with st.container():
-        user_input = st.text_input("Type your question or ingredients...", key="input", placeholder="e.g. I have potatoes and beef")
-        send_btn = st.button("Send", key="send")
+    for chat in st.session_state.chat_history:
+        if chat["role"] == "user":
+            st.markdown(f"<div class='user-msg'>{chat['content']}</div>", unsafe_allow_html=True)
+        else:
+            st.markdown(f"<div class='bot-msg'>{chat['content']}</div>", unsafe_allow_html=True)
 
-        if send_btn and user_input:
-            st.session_state["past"].append(user_input)
-            parsed = analyze_user_text(user_input)
-            st.session_state["generated"].append(f"Dobby: {parsed['message']}")
+    user_text = st.text_input("Type your message:", key="user_input", placeholder="e.g. I have chicken and rice... 🍗")
+    send = st.button("Send")
 
-            # Fetch recipes safely
-            try:
-                data = spoon_search_by_ingredients(parsed["ingredients"])
-                if isinstance(data, list):
-                    st.session_state["results"] = [r for r in data if isinstance(r, dict)]
-                else:
-                    st.session_state["results"] = []
-            except Exception as e:
-                st.session_state["generated"].append(f"⚠️ Error fetching recipes: {e}")
+    if send and user_text:
+        st.session_state.chat_history.append({"role":"user", "content":user_text})
+        parsed = analyze_user_text(user_text)
+        dobby_reply = parsed.get("message", "Let's cook something amazing!")
+        st.session_state.chat_history.append({"role":"bot", "content": f"Dobby: {dobby_reply}"})
+
+        # البحث في Spoonacular
+        ingredients = parsed.get("ingredients", [])
+        recipes = spoon_search_by_ingredients(ingredients, number=4)
+
+        st.session_state.recipes = recipes
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-# ---------- Results Column ----------
-with col_result:
-    st.markdown("<div class='results-box'>", unsafe_allow_html=True)
-    st.title("🍽️ Results")
-    if st.session_state["results"]:
-        for recipe in st.session_state["results"]:
-            rid = recipe.get("id")
-            title = recipe.get("title", "")
-            img = recipe.get("image", "")
-            st.markdown(f"**{title}**")
-            if img:
-                st.image(img, use_column_width=True)
-            try:
-                info = spoon_get_recipe_information(rid)
-                st.markdown(format_recipe(info))
-            except Exception:
-                st.markdown("⚠️ Could not load full recipe info.")
-            st.markdown("---")
-    st.markdown("</div>", unsafe_allow_html=True)
+# ========== قسم النتائج ==========
+with results_col:
+    st.markdown("<h3 class='section-title'>🍽️ Recipe Suggestions</h3>", unsafe_allow_html=True)
+
+    recipes = st.session_state.get("recipes", [])
+    if recipes:
+        for r in recipes:
+            st.markdown(f"""
+            <div class='recipe-card'>
+                <img src='{r["image"]}' class='recipe-img'>
+                <div class='recipe-title'>{r["title"]}</div>
+            </div>
+            """, unsafe_allow_html=True)
+    else:
+        st.info("No recipes yet — ask Dobby about ingredients or a dish! 😋")
