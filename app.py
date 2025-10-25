@@ -50,11 +50,15 @@ def call_fireworks_chat(system_prompt: str, user_prompt: str, max_tokens: int = 
 
 ANALYSIS_SYSTEM_PROMPT = """
 You are Dobby, a friendly cooking assistant. Your job: analyze the user's message and return ONLY a compact JSON object (no other text) with the following fields:
-- intent: one of "find_recipe", "specific_recipe", "modify_recipe" or "general"
-- ingredients: array of ingredient words
-- dish: short dish name
-- exclude: ingredients to exclude
-- message: short English sentence summarizing interpretation
+
+- intent: one of "find_recipe", "specific_recipe", or "modify_recipe" or "general"
+- ingredients: an array of ingredient words (lowercase) if present (or empty array)
+- dish: a short dish name if user requested a specific recipe (or null)
+- exclude: an array of ingredients to exclude (if user explicitly asked to avoid something)
+- message: a short English sentence summarizing interpretation (for user display)
+
+If the user asks something not about cooking, return {"intent":"general","message":"...","ingredients":[], "dish": null, "exclude": []}
+
 Return JSON only, nothing else.
 """
 
@@ -70,11 +74,11 @@ def analyze_user_text(user_text: str):
         parsed = json.loads(json_text)
     except Exception:
         return {"intent":"find_recipe", "ingredients":[user_text], "dish": None, "exclude": [], "message": f"Searching for recipes based on: {user_text}"}
-    parsed.setdefault("ingredients", [])
-    parsed.setdefault("exclude", [])
-    parsed.setdefault("dish", None)
-    parsed.setdefault("message", "")
-    parsed.setdefault("intent", "find_recipe")
+    parsed.setdefault("ingredients", parsed.get("ingredients") or [])
+    parsed.setdefault("exclude", parsed.get("exclude") or [])
+    parsed.setdefault("dish", parsed.get("dish") if parsed.get("dish") is not None else None)
+    parsed.setdefault("message", parsed.get("message") or "")
+    parsed.setdefault("intent", parsed.get("intent") or "find_recipe")
     return parsed
 
 def spoon_search_by_ingredients(ingredients, exclude=None, number=4):
@@ -100,7 +104,8 @@ def spoon_search_by_query(query, number=4):
     url = f"{SPOON_BASE}/recipes/complexSearch?{urlencode(params)}"
     r = requests.get(url, timeout=30)
     r.raise_for_status()
-    return r.json().get("results", [])
+    data = r.json()
+    return data.get("results", [])
 
 def spoon_get_recipe_information(recipe_id):
     url = f"{SPOON_BASE}/recipes/{recipe_id}/information"
@@ -113,54 +118,67 @@ def format_recipe_for_chat(info: dict):
     title = info.get("title", "Recipe")
     ready = info.get("readyInMinutes")
     servings = info.get("servings")
-    parts = [f"**{title}**"]
-    if ready: parts.append(f"⏱ Ready in: {ready} minutes")
-    if servings: parts.append(f"🍽 Serves: {servings}")
-    parts.append("**Ingredients:**")
+    ingredients = []
     for ing in info.get("extendedIngredients", []):
-        parts.append(f"- {ing.get('originalString', '')}")
+        amt = ing.get("originalString") or f"{ing.get('amount','')} {ing.get('unit','')} {ing.get('name','')}"
+        ingredients.append(amt)
     steps = []
     ai = info.get("analyzedInstructions", [])
-    if ai:
+    if ai and isinstance(ai, list):
         for sec in ai:
             for step in sec.get("steps", []):
                 steps.append(step.get("step"))
-    if not steps and info.get("instructions"):
-        steps = [s.strip() for s in info["instructions"].split(". ") if s.strip()]
+    if not steps:
+        instr = info.get("instructions")
+        if instr:
+            steps = [s.strip() for s in instr.split(". ") if s.strip()]
+    parts = []
+    parts.append(f"**{title}**")
+    if ready:
+        parts.append(f"⏱ Ready in: {ready} minutes")
+    if servings:
+        parts.append(f"🍽 Serves: {servings}")
+    parts.append("**Ingredients:**")
+    for ing in ingredients:
+        parts.append(f"- {ing}")
     if steps:
         parts.append("**Steps:**")
         for i, s in enumerate(steps, 1):
             parts.append(f"{i}. {s}")
-    if info.get("sourceUrl"):
-        parts.append(f"🔗 Source: {info['sourceUrl']}")
+    source = info.get("sourceUrl")
+    if source:
+        parts.append(f"🔗 Source: {source}")
     return "\n\n".join(parts)
 
 # ---------- Streamlit UI ----------
 st.set_page_config(page_title="Dobby Cooking Assistant", page_icon="🍳", layout="wide")
 st.title("Dobby Cooking Assistant — English (simple UI)")
-st.write("Type ingredients or ask for a dish. Example: 'I have potatoes and 250g beef, what can I cook?'")
 
+st.write("Type ingredients or ask for a dish. Example: 'I have potatoes and 250g beef, what can I cook?'")
 col1, col2 = st.columns([2,1])
 
 with col2:
     st.markdown("**Settings**")
-    max_results = st.number_input("Results (max recipes to fetch):", 1, 8, 3)
-    temp = st.slider("Dobby temperature (analysis)", 0.0, 1.0, 0.2)
-    show_images = st.checkbox("Show images (if available)", True)
+    max_results = st.number_input("Results (max recipes to fetch):", min_value=1, max_value=8, value=3)
+    # ثابتة على 0.20
+    temp = 0.20
+    show_images = st.checkbox("Show images (if available)", value=True)
 
+# chat area
 if "generated" not in st.session_state:
     st.session_state["generated"] = []
 if "past" not in st.session_state:
     st.session_state["past"] = []
-if "show_recipes" not in st.session_state:
-    st.session_state["show_recipes"] = False
 
 user_text = st.text_input("Your question or ingredients:", key="input_text")
-
 if st.button("Ask Dobby") and user_text:
-    st.session_state.past.append(user_text)
-    with st.spinner("Dobby is analyzing your request..."):
-        parsed = analyze_user_text(user_text)
+    try:
+        st.session_state.past.append(user_text)
+        with st.spinner("Dobby is analyzing your request..."):
+            parsed = analyze_user_text(user_text)
+    except Exception as e:
+        st.error(f"Analysis error: {e}")
+        parsed = {"intent":"find_recipe", "ingredients":[user_text], "dish": None, "exclude": [], "message": f"Searching for recipes based on: {user_text}"}
 
     st.session_state.generated.append(f"Dobby: {parsed.get('message','I will search for recipes.')}")
 
@@ -172,35 +190,39 @@ if st.button("Ask Dobby") and user_text:
     recipes_meta = []
     try:
         if intent in ("find_recipe","modify_recipe"):
-            results = spoon_search_by_ingredients(ingredients, exclude, max_results) if ingredients else spoon_search_by_query(dish or user_text, max_results)
-            for r in results:
-                recipes_meta.append({"id": r.get("id"), "title": r.get("title"), "image": r.get("image")})
+            if ingredients:
+                results = spoon_search_by_ingredients(ingredients, exclude=exclude, number=max_results)
+                for r in results:
+                    recipes_meta.append({"id": r.get("id"), "title": r.get("title"), "image": r.get("image")})
+            else:
+                q = dish or user_text
+                results = spoon_search_by_query(q, number=max_results)
+                for r in results:
+                    recipes_meta.append({"id": r.get("id"), "title": r.get("title"), "image": r.get("image")})
         elif intent == "specific_recipe":
-            results = spoon_search_by_query(dish or user_text, 1)
+            q = dish or user_text
+            results = spoon_search_by_query(q, number=1)
             for r in results:
                 recipes_meta.append({"id": r.get("id"), "title": r.get("title"), "image": r.get("image")})
+        else:
+            try:
+                answer = call_fireworks_chat("You are Dobby, a helpful cooking assistant.", user_text, max_tokens=300, temperature=temp)
+                st.session_state.generated.append(answer)
+            except Exception as e:
+                st.error(f"Dobby error: {e}")
     except Exception as e:
         st.error(f"Spoonacular search error: {e}")
 
     if recipes_meta:
-        col_show, col_hide = st.columns([1,1])
-        with col_show:
-            if st.button("🔽 Show Recipes"):
-                st.session_state["show_recipes"] = True
-        with col_hide:
-            if st.button("🔼 Hide Recipes"):
-                st.session_state["show_recipes"] = False
-
-        if st.session_state["show_recipes"]:
-            for meta in recipes_meta:
-                try:
-                    info = spoon_get_recipe_information(meta["id"])
-                    formatted = format_recipe_for_chat(info)
-                    if show_images and meta.get("image"):
-                        formatted = f"![recipeimage]({meta['image']})\n\n" + formatted
-                    st.session_state.generated.append(formatted)
-                except Exception as e:
-                    st.session_state.generated.append(f"Could not fetch details for {meta.get('title')}: {e}")
+        for meta in recipes_meta:
+            try:
+                info = spoon_get_recipe_information(meta["id"])
+                formatted = format_recipe_for_chat(info)
+                if show_images and meta.get("image"):
+                    formatted = f"![recipeimage]({meta.get('image')})\n\n" + formatted
+                st.session_state.generated.append(formatted)
+            except Exception as e:
+                st.session_state.generated.append(f"Could not fetch details for {meta.get('title')}: {e}")
 
 if st.session_state["generated"]:
     for i in range(len(st.session_state["generated"]) - 1, -1, -1):
