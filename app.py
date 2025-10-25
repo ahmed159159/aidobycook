@@ -1,12 +1,13 @@
 import os
 import json
+import time
 import requests
 import streamlit as st
 from streamlit_chat import message
 from dotenv import load_dotenv
 from urllib.parse import urlencode
 
-# ============ Load .env ============
+# Load .env locally
 load_dotenv()
 
 # ---------- Config / env ----------
@@ -19,6 +20,7 @@ SPOON_BASE = "https://api.spoonacular.com"
 
 # ---------- Helpers ----------
 def call_fireworks_chat(system_prompt: str, user_prompt: str, max_tokens: int = 512, temperature: float = 0.7):
+    """Call Fireworks chat completions on your deployed model, with retry logic."""
     if not FIREWORKS_API_KEY:
         raise RuntimeError("FIREWORKS_API_KEY not set in environment")
 
@@ -36,26 +38,39 @@ def call_fireworks_chat(system_prompt: str, user_prompt: str, max_tokens: int = 
         "Content-Type": "application/json",
         "Authorization": f"Bearer {FIREWORKS_API_KEY}"
     }
-    r = requests.post(FIREWORKS_URL, headers=headers, json=payload, timeout=60)
-    if r.status_code != 200:
-        raise RuntimeError(f"Fireworks API error {r.status_code}: {r.text}")
-    j = r.json()
-    if "choices" in j and len(j["choices"]) > 0:
-        choice = j["choices"][0]
-        if isinstance(choice.get("message"), dict) and choice["message"].get("content"):
-            return choice["message"]["content"].strip()
-        if choice.get("text"):
-            return choice["text"].strip()
-    raise RuntimeError("Fireworks returned no text")
 
-# ---------- Analysis ----------
+    for attempt in range(3):
+        try:
+            r = requests.post(FIREWORKS_URL, headers=headers, json=payload, timeout=120)
+            if r.status_code != 200:
+                raise RuntimeError(f"Fireworks API error {r.status_code}: {r.text}")
+            j = r.json()
+            if "choices" in j and len(j["choices"]) > 0:
+                choice = j["choices"][0]
+                if isinstance(choice.get("message"), dict) and choice["message"].get("content"):
+                    return choice["message"]["content"].strip()
+                if choice.get("text"):
+                    return choice["text"].strip()
+            raise RuntimeError("Fireworks returned no text")
+        except requests.exceptions.ReadTimeout:
+            if attempt < 2:
+                time.sleep(3)
+                continue
+            raise
+
+# ---------- Prompts ----------
 ANALYSIS_SYSTEM_PROMPT = """
-You are Dobby, a friendly cooking assistant. Your job: analyze the user's message and return ONLY JSON with:
-- intent
-- ingredients
-- dish
-- exclude
-- message
+You are Dobby, a friendly cooking assistant. Your job: analyze the user's message and return ONLY a compact JSON object (no other text) with the following fields:
+
+- intent: one of "find_recipe", "specific_recipe", "modify_recipe", or "general"
+- ingredients: an array of ingredient words (lowercase) if present (or empty array)
+- dish: a short dish name if user requested a specific recipe (or null)
+- exclude: an array of ingredients to exclude (if user explicitly asked to avoid something)
+- message: a short English sentence summarizing interpretation (for user display)
+
+If the user asks something not about cooking, return {"intent":"general","message":"...","ingredients":[], "dish": null, "exclude": []}
+
+Return JSON only, nothing else.
 """
 
 def analyze_user_text(user_text: str):
@@ -69,21 +84,12 @@ def analyze_user_text(user_text: str):
     try:
         parsed = json.loads(json_text)
     except Exception:
-        parsed = {"intent": "find_recipe", "ingredients": [user_text], "dish": None, "exclude": [], "message": f"Searching recipes for: {user_text}"}
-
-    parsed.setdefault("ingredients", [])
-    parsed.setdefault("exclude", [])
-    parsed.setdefault("dish", None)
-    parsed.setdefault("message", "")
-    parsed.setdefault("intent", "find_recipe")
-
-    # 🔧 FIX: detect ingredients automatically
-    text_lower = user_text.lower()
-    if any(word in text_lower for word in ["have", "with", ",", "and"]) and len(parsed.get("ingredients", [])) == 0:
-        parsed["intent"] = "find_recipe"
-        parsed["ingredients"] = [w.strip() for w in text_lower.replace("i have", "").replace("with", ",").split(",") if w.strip()]
-        parsed["message"] = f"Searching for recipes using: {', '.join(parsed['ingredients'])}"
-
+        return {"intent":"find_recipe", "ingredients":[user_text], "dish": None, "exclude": [], "message": f"Searching for recipes based on: {user_text}"}
+    parsed.setdefault("ingredients", parsed.get("ingredients") or [])
+    parsed.setdefault("exclude", parsed.get("exclude") or [])
+    parsed.setdefault("dish", parsed.get("dish") if parsed.get("dish") is not None else None)
+    parsed.setdefault("message", parsed.get("message") or "")
+    parsed.setdefault("intent", parsed.get("intent") or "find_recipe")
     return parsed
 
 # ---------- Spoonacular ----------
@@ -110,7 +116,8 @@ def spoon_search_by_query(query, number=4):
     url = f"{SPOON_BASE}/recipes/complexSearch?{urlencode(params)}"
     r = requests.get(url, timeout=30)
     r.raise_for_status()
-    return r.json().get("results", [])
+    data = r.json()
+    return data.get("results", [])
 
 def spoon_get_recipe_information(recipe_id):
     url = f"{SPOON_BASE}/recipes/{recipe_id}/information"
@@ -125,110 +132,103 @@ def format_recipe_for_chat(info: dict):
     servings = info.get("servings")
     ingredients = [ing.get("originalString") for ing in info.get("extendedIngredients", []) if ing.get("originalString")]
     steps = []
-    for sec in info.get("analyzedInstructions", []):
-        for step in sec.get("steps", []):
-            steps.append(step.get("step"))
+    ai = info.get("analyzedInstructions", [])
+    if ai and isinstance(ai, list):
+        for sec in ai:
+            for step in sec.get("steps", []):
+                steps.append(step.get("step"))
     if not steps and info.get("instructions"):
         steps = [s.strip() for s in info["instructions"].split(". ") if s.strip()]
     parts = [f"**{title}**"]
-    if ready:
-        parts.append(f"⏱ Ready in: {ready} minutes")
-    if servings:
-        parts.append(f"🍽 Serves: {servings}")
+    if ready: parts.append(f"⏱ Ready in: {ready} minutes")
+    if servings: parts.append(f"🍽 Serves: {servings}")
     parts.append("**Ingredients:**")
-    for ing in ingredients:
-        parts.append(f"- {ing}")
+    for ing in ingredients: parts.append(f"- {ing}")
     if steps:
         parts.append("**Steps:**")
-        for i, s in enumerate(steps, 1):
-            parts.append(f"{i}. {s}")
+        for i, s in enumerate(steps, 1): parts.append(f"{i}. {s}")
     if info.get("sourceUrl"):
         parts.append(f"🔗 Source: {info['sourceUrl']}")
     return "\n\n".join(parts)
 
 # ---------- Streamlit UI ----------
 st.set_page_config(page_title="Dobby Cooking Assistant", page_icon="🍳", layout="wide")
-
-# CSS لجعل الرسائل من تحت لفوق
-st.markdown(
-    """
-    <style>
-    div[data-testid="stVerticalBlock"] > div:has(div[data-testid="stChatMessage"]) {
-        display: flex;
-        flex-direction: column-reverse;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-
 st.title("🍳 Dobby Cooking Assistant")
-st.write("Type ingredients or ask for a dish. Example: *'I have potatoes and 250g beef, what can I cook?'*")
 
-if "generated" not in st.session_state:
-    st.session_state["generated"] = []
-if "past" not in st.session_state:
-    st.session_state["past"] = []
+st.write("Type ingredients or ask for a dish. Example: 'I have potatoes and 250g beef, what can I cook?'")
 
-chat_container = st.container()
-with chat_container:
-    for i in range(len(st.session_state.get("generated", []))):
-        if i < len(st.session_state.get("past", [])):
-            message(st.session_state["past"][i], is_user=True, key=f"user_{i}")
-        message(st.session_state["generated"][i], key=f"gen_{i}")
-
-st.markdown("---")
-col1, col2 = st.columns([4,1])
-with col1:
-    user_text = st.text_input("Your question or ingredients:", key="input_text", placeholder="Ask Dobby something...")
+col1, col2 = st.columns([2, 1])
 with col2:
-    ask = st.button("Ask Dobby")
+    st.markdown("**Settings**")
+    max_results = st.number_input("Results (max recipes to fetch):", min_value=1, max_value=8, value=3)
+    temp = st.slider("Dobby temperature (analysis)", min_value=0.0, max_value=1.0, value=0.2)
+    show_images = st.checkbox("Show images (if available)", value=True)
+    st.markdown("---")
+    st.markdown("**Env status**")
+    st.markdown(f"- Fireworks key: {'✅ OK' if FIREWORKS_API_KEY else '❌ MISSING'}")
+    st.markdown(f"- Spoonacular key: {'✅ OK' if SPOONACULAR_API_KEY else '❌ MISSING'}")
 
-st.markdown(
-    """
-    <script>
-    var chatDiv = window.parent.document.querySelector('.main');
-    if (chatDiv) { chatDiv.scrollTo(0, chatDiv.scrollHeight); }
-    </script>
-    """,
-    unsafe_allow_html=True
-)
+# Session State
+if "generated" not in st.session_state:
+    st.session_state.generated = []
+if "past" not in st.session_state:
+    st.session_state.past = []
 
-# ---------- Main Logic ----------
-if ask and user_text:
-    st.session_state.past.append(user_text)
-    with st.spinner("Dobby is analyzing your request..."):
-        parsed = analyze_user_text(user_text)
+# Input area stays at the bottom
+st.markdown("---")
+user_text = st.text_input("💬 Your question or ingredients:", key="input_text", placeholder="E.g. I have chicken and rice but no onions")
 
-    st.session_state.generated.append(f"Dobby: {parsed.get('message','I will search for recipes.')}")
+if st.button("Ask Dobby"):
+    if user_text:
+        st.session_state.past.append(user_text)
+        try:
+            with st.spinner("Dobby is analyzing your request..."):
+                parsed = analyze_user_text(user_text)
+        except Exception as e:
+            st.error(f"Analysis error: {e}")
+            parsed = {"intent":"find_recipe","ingredients":[user_text],"dish":None,"exclude":[],"message":f"Searching for recipes based on: {user_text}"}
+        st.session_state.generated.append(f"Dobby: {parsed.get('message','I will search for recipes.')}")
 
-    intent = parsed.get("intent")
-    ingredients = parsed.get("ingredients") or []
-    exclude = parsed.get("exclude") or []
-    dish = parsed.get("dish")
-    recipes_meta = []
+        intent = parsed.get("intent")
+        ingredients = parsed.get("ingredients") or []
+        exclude = parsed.get("exclude") or []
+        dish = parsed.get("dish")
 
-    if intent in ("find_recipe", "modify_recipe", "general"):
-        if ingredients or dish:
-            try:
+        recipes_meta = []
+        try:
+            if intent in ("find_recipe", "modify_recipe"):
                 if ingredients:
-                    results = spoon_search_by_ingredients(ingredients, exclude=exclude, number=3)
+                    results = spoon_search_by_ingredients(ingredients, exclude, number=max_results)
                 else:
-                    results = spoon_search_by_query(dish or user_text, number=3)
+                    results = spoon_search_by_query(dish or user_text, number=max_results)
                 for r in results:
                     recipes_meta.append({"id": r.get("id"), "title": r.get("title"), "image": r.get("image")})
-            except Exception as e:
-                st.error(f"Spoonacular search error: {e}")
-        else:
-            answer = call_fireworks_chat("You are Dobby, a helpful cooking assistant.", user_text, max_tokens=300, temperature=0.2)
-            st.session_state.generated.append(answer)
-    else:
-        answer = call_fireworks_chat("You are Dobby, a helpful cooking assistant.", user_text, max_tokens=300, temperature=0.2)
-        st.session_state.generated.append(answer)
+            elif intent == "specific_recipe":
+                results = spoon_search_by_query(dish or user_text, number=1)
+                for r in results:
+                    recipes_meta.append({"id": r.get("id"), "title": r.get("title"), "image": r.get("image")})
+            else:
+                answer = call_fireworks_chat("You are Dobby, a helpful cooking assistant.", user_text, max_tokens=300, temperature=temp)
+                st.session_state.generated.append(answer)
+        except Exception as e:
+            st.error(f"Spoonacular search error: {e}")
 
-    for meta in recipes_meta:
-        info = spoon_get_recipe_information(meta["id"])
-        formatted = format_recipe_for_chat(info)
-        if meta.get("image"):
-            formatted = f"![recipeimage]({meta['image']})\n\n" + formatted
-        st.session_state.generated.append(formatted)
+        if recipes_meta:
+            for meta in recipes_meta:
+                try:
+                    info = spoon_get_recipe_information(meta["id"])
+                    formatted = format_recipe_for_chat(info)
+                    if show_images and meta.get("image"):
+                        formatted = f"![recipeimage]({meta.get('image')})\n\n" + formatted
+                    st.session_state.generated.append(formatted)
+                except Exception as e:
+                    st.session_state.generated.append(f"Could not fetch details for {meta.get('title')}: {e}")
+
+# Chat area (scrolls newest at bottom)
+st.markdown("---")
+for i in range(len(st.session_state.past)):
+    message(st.session_state.past[i], is_user=True, key=f"user_{i}")
+    if i < len(st.session_state.generated):
+        message(st.session_state.generated[i], key=f"gen_{i}")
+
+st.markdown("**Notes:** This app uses Fireworks for analysis and Spoonacular for recipe data.")
