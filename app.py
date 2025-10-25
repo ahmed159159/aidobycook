@@ -6,26 +6,39 @@ from streamlit_chat import message
 from dotenv import load_dotenv
 from urllib.parse import urlencode
 import base64
+from pathlib import Path
 
 # ---------- Add Background Image ----------
 def add_bg_from_local(image_file):
-    with open(image_file, "rb") as f:
-        data = f.read()
-    encoded = base64.b64encode(data).decode()
-    page_bg = f"""
-    <style>
-    .stApp {{
-        background-image: url("data:image/png;base64,{encoded}");
-        background-size: cover;
-        background-position: center;
-        background-attachment: fixed;
-    }}
-    </style>
-    """
-    st.markdown(page_bg, unsafe_allow_html=True)
+    try:
+        # المسار الكامل للصورة (بغض النظر عن مكان التشغيل)
+        current_dir = Path(__file__).parent
+        img_path = current_dir / image_file
 
-# استدعاء الخلفية
-add_bg_from_local("background.jpg")  # ← ضع الصورة في نفس مجلد المشروع
+        if not img_path.exists():
+            st.warning(f"⚠️ الخلفية غير موجودة في هذا المسار: {img_path.resolve()}")
+            return
+
+        with open(img_path, "rb") as f:
+            data = f.read()
+
+        encoded = base64.b64encode(data).decode()
+        page_bg = f"""
+        <style>
+        .stApp {{
+            background-image: url("data:image/png;base64,{encoded}");
+            background-size: cover;
+            background-position: center;
+            background-attachment: fixed;
+        }}
+        </style>
+        """
+        st.markdown(page_bg, unsafe_allow_html=True)
+    except Exception as e:
+        st.warning(f"⚠️ حدث خطأ أثناء تحميل الخلفية: {e}")
+
+# استدعاء الخلفية (يجب أن تكون الصورة باسم background.jpg في نفس المجلد)
+add_bg_from_local("background.jpg")
 
 # ---------- Load .env ----------
 load_dotenv()
@@ -187,8 +200,8 @@ with col2:
     show_images = st.checkbox("Show images (if available)", value=True)
     st.markdown("---")
     st.markdown("**Env status**")
-    st.markdown(f"- Fireworks key: {'OK' if FIREWORKS_API_KEY else 'MISSING'}")
-    st.markdown(f"- Spoonacular key: {'OK' if SPOONACULAR_API_KEY else 'MISSING'}")
+    st.markdown(f"- Fireworks key: {'✅ OK' if FIREWORKS_API_KEY else '❌ MISSING'}")
+    st.markdown(f"- Spoonacular key: {'✅ OK' if SPOONACULAR_API_KEY else '❌ MISSING'}")
 
 # chat area
 if "generated" not in st.session_state:
