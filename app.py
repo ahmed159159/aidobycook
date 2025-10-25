@@ -48,7 +48,6 @@ def call_fireworks_chat(system_prompt: str, user_prompt: str, max_tokens: int = 
             return choice["text"].strip()
     raise RuntimeError("Fireworks returned no text")
 
-
 # ---------- Analysis ----------
 ANALYSIS_SYSTEM_PROMPT = """
 You are Dobby, a friendly cooking assistant. Your job: analyze the user's message and return ONLY JSON with:
@@ -70,14 +69,22 @@ def analyze_user_text(user_text: str):
     try:
         parsed = json.loads(json_text)
     except Exception:
-        return {"intent":"find_recipe", "ingredients":[user_text], "dish": None, "exclude": [], "message": f"Searching for recipes based on: {user_text}"}
+        parsed = {"intent": "find_recipe", "ingredients": [user_text], "dish": None, "exclude": [], "message": f"Searching recipes for: {user_text}"}
+
     parsed.setdefault("ingredients", [])
     parsed.setdefault("exclude", [])
     parsed.setdefault("dish", None)
     parsed.setdefault("message", "")
     parsed.setdefault("intent", "find_recipe")
-    return parsed
 
+    # 🔧 FIX: detect ingredients automatically
+    text_lower = user_text.lower()
+    if any(word in text_lower for word in ["have", "with", ",", "and"]) and len(parsed.get("ingredients", [])) == 0:
+        parsed["intent"] = "find_recipe"
+        parsed["ingredients"] = [w.strip() for w in text_lower.replace("i have", "").replace("with", ",").split(",") if w.strip()]
+        parsed["message"] = f"Searching for recipes using: {', '.join(parsed['ingredients'])}"
+
+    return parsed
 
 # ---------- Spoonacular ----------
 def spoon_search_by_ingredients(ingredients, exclude=None, number=4):
@@ -139,11 +146,10 @@ def format_recipe_for_chat(info: dict):
         parts.append(f"🔗 Source: {info['sourceUrl']}")
     return "\n\n".join(parts)
 
-
 # ---------- Streamlit UI ----------
 st.set_page_config(page_title="Dobby Cooking Assistant", page_icon="🍳", layout="wide")
 
-# CSS لتغيير اتجاه الشات من تحت لفوق
+# CSS لجعل الرسائل من تحت لفوق
 st.markdown(
     """
     <style>
@@ -159,13 +165,11 @@ st.markdown(
 st.title("🍳 Dobby Cooking Assistant")
 st.write("Type ingredients or ask for a dish. Example: *'I have potatoes and 250g beef, what can I cook?'*")
 
-# Initialize session
 if "generated" not in st.session_state:
     st.session_state["generated"] = []
 if "past" not in st.session_state:
     st.session_state["past"] = []
 
-# عرض الرسائل داخل container
 chat_container = st.container()
 with chat_container:
     for i in range(len(st.session_state.get("generated", []))):
@@ -173,7 +177,6 @@ with chat_container:
             message(st.session_state["past"][i], is_user=True, key=f"user_{i}")
         message(st.session_state["generated"][i], key=f"gen_{i}")
 
-# مربع الإدخال أسفل الشاشة
 st.markdown("---")
 col1, col2 = st.columns([4,1])
 with col1:
@@ -181,7 +184,6 @@ with col1:
 with col2:
     ask = st.button("Ask Dobby")
 
-# Scroll تلقائي لأسفل
 st.markdown(
     """
     <script>
@@ -192,7 +194,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# معالجة إدخال المستخدم
+# ---------- Main Logic ----------
 if ask and user_text:
     st.session_state.past.append(user_text)
     with st.spinner("Dobby is analyzing your request..."):
@@ -204,19 +206,22 @@ if ask and user_text:
     ingredients = parsed.get("ingredients") or []
     exclude = parsed.get("exclude") or []
     dish = parsed.get("dish")
-
     recipes_meta = []
-    if intent in ("find_recipe", "modify_recipe"):
-        if ingredients:
-            results = spoon_search_by_ingredients(ingredients, exclude=exclude, number=3)
+
+    if intent in ("find_recipe", "modify_recipe", "general"):
+        if ingredients or dish:
+            try:
+                if ingredients:
+                    results = spoon_search_by_ingredients(ingredients, exclude=exclude, number=3)
+                else:
+                    results = spoon_search_by_query(dish or user_text, number=3)
+                for r in results:
+                    recipes_meta.append({"id": r.get("id"), "title": r.get("title"), "image": r.get("image")})
+            except Exception as e:
+                st.error(f"Spoonacular search error: {e}")
         else:
-            results = spoon_search_by_query(dish or user_text, number=3)
-        for r in results:
-            recipes_meta.append({"id": r.get("id"), "title": r.get("title"), "image": r.get("image")})
-    elif intent == "specific_recipe":
-        results = spoon_search_by_query(dish or user_text, number=1)
-        for r in results:
-            recipes_meta.append({"id": r.get("id"), "title": r.get("title"), "image": r.get("image")})
+            answer = call_fireworks_chat("You are Dobby, a helpful cooking assistant.", user_text, max_tokens=300, temperature=0.2)
+            st.session_state.generated.append(answer)
     else:
         answer = call_fireworks_chat("You are Dobby, a helpful cooking assistant.", user_text, max_tokens=300, temperature=0.2)
         st.session_state.generated.append(answer)
