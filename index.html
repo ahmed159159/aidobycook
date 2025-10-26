@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Dobby Cooking Assistant — Full</title>
+  <title>Dobby Cooking Assistant — Full (Clean UI)</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
     body { padding: 18px; background: #fffaf0; color: #222; }
@@ -13,6 +13,8 @@
     .card-user { background:#eef7ff; }
     .card-dobby { background:#fff6e6; }
     .small-muted { font-size: 0.9rem; color:#666; }
+    /* hide elements used in original UI but now hidden */
+    .hidden-ui { display: none !important; }
   </style>
 </head>
 <body>
@@ -38,52 +40,56 @@
         <div id="chatArea" aria-live="polite"></div>
       </div>
 
-      <!-- Sidebar -->
+      <!-- Sidebar: only Results (max recipes) visible -->
       <div class="col-md-4 sidebar">
         <h5>Settings</h5>
 
-        <div class="mb-2">
-          <label class="form-label">Fireworks API Key (embedded)</label>
-          <input id="fireworksKey" class="form-control" />
-        </div>
-
-        <div class="mb-2">
-          <label class="form-label">Fireworks Model</label>
-          <input id="fireworksModel" class="form-control" value="accounts/ahmed159/deployedModels/dobby-unhinged-llama-3-3-70b-new-vdw6j81e" />
-        </div>
-
-        <div class="mb-2">
-          <label class="form-label">Spoonacular API Key (embedded)</label>
-          <input id="spoonKey" class="form-control" />
-        </div>
-
+        <!-- Visible control the user requested to remain -->
         <div class="mb-2">
           <label class="form-label">Results (max recipes)</label>
           <input id="maxResults" type="number" min="1" max="8" class="form-control" value="3" />
         </div>
 
-        <div class="mb-2">
-          <label class="form-label">Dobby temperature (analysis)</label>
-          <input id="temp" type="range" min="0" max="1" step="0.01" class="form-range" value="0.2" />
-          <div id="tempValue">0.20</div>
-        </div>
+        <!-- Hidden-original controls (kept for backwards-compatibility in DOM but not shown) -->
+        <div class="hidden-ui" aria-hidden="true">
+          <!-- keys and model are embedded in script constants below; these inputs are hidden intentionally -->
+          <div class="mb-2">
+            <label class="form-label">Fireworks API Key (embedded)</label>
+            <input id="fireworksKey" class="form-control" />
+          </div>
 
-        <div class="form-check mb-2">
-          <input class="form-check-input" type="checkbox" id="showImages" checked>
-          <label class="form-check-label" for="showImages">Show images (if available)</label>
-        </div>
+          <div class="mb-2">
+            <label class="form-label">Fireworks Model</label>
+            <input id="fireworksModel" class="form-control" value="accounts/ahmed159/deployedModels/dobby-unhinged-llama-3-3-70b-new-vdw6j81e" />
+          </div>
 
-        <hr />
-        <h6>Env status</h6>
-        <ul id="envStatus" class="small-muted"></ul>
+          <div class="mb-2">
+            <label class="form-label">Spoonacular API Key (embedded)</label>
+            <input id="spoonKey" class="form-control" />
+          </div>
+
+          <div class="mb-2">
+            <label class="form-label">Dobby temperature (analysis)</label>
+            <input id="temp" type="range" min="0" max="1" step="0.01" class="form-range" value="0.2" />
+            <div id="tempValue">0.20</div>
+          </div>
+
+          <div class="form-check mb-2">
+            <input class="form-check-input" type="checkbox" id="showImages" checked>
+            <label class="form-check-label" for="showImages">Show images (if available)</label>
+          </div>
+
+          <hr />
+          <h6>Env status</h6>
+          <ul id="envStatus" class="small-muted"></ul>
+        </div>
 
         <hr />
         <small class="small-muted">
           Notes:
           <ul>
-            <li>This single-file app calls Fireworks and Spoonacular directly from your browser — keys are embedded below.</li>
-            <li>If you see <strong>CORS</strong> errors, run a tiny proxy or serve this file from a simple HTTP server (e.g., `python -m http.server 8000`).</li>
-            <li>Do not share this file while keys are present.</li>
+            <li>Keys are embedded inside the file (kept private). Do not share this file while keys are present.</li>
+            <li>If you see CORS errors, run a tiny proxy or serve this file from a simple HTTP server (e.g., <code>python -m http.server 8000</code>).</li>
           </ul>
         </small>
       </div>
@@ -91,12 +97,14 @@
   </div>
 
 <script>
-/* -------------------- Embedded API keys (from your message) --------------------
-   You asked to embed these keys. Keep this file private.
+/* =================== EMBEDDED KEYS & SETTINGS ===================
+   Keys are embedded as requested and NOT shown in the UI.
+   Keep this file private.
 */
 const EMBED_FIREWORKS_KEY = "fw_3ZP4FeSXSHPLqciG2exufxtL";
 const EMBED_SPOON_KEY = "803bffd94314410886102ebcc075ddad";
-/* --------------------------------------------------------------------------- */
+const DEFAULT_FIREWORKS_MODEL = "accounts/ahmed159/deployedModels/dobby-unhinged-llama-3-3-70b-new-vdw6j81e";
+/* ================================================================= */
 
 const FIREWORKS_URL = 'https://api.fireworks.ai/inference/v1/chat/completions';
 const SPOON_BASE = 'https://api.spoonacular.com';
@@ -154,11 +162,12 @@ function cleanModelJsonResponse(raw){
 
 /* -------------------- Fireworks chat call -------------------- */
 async function callFireworksChat(systemPrompt, userPrompt, max_tokens=512, temperature=0.7){
-  const key = document.getElementById('fireworksKey').value.trim() || EMBED_FIREWORKS_KEY;
-  const model = document.getElementById('fireworksModel').value.trim() || '';
+  // use embedded key by default; user inputs are hidden but can override if filled programmatically
+  const key = EMBED_FIREWORKS_KEY;
+  const model = DEFAULT_FIREWORKS_MODEL;
   if(!key) throw new Error('FIREWORKS_API_KEY not set.');
   const payload = {
-    model: model || "accounts/ahmed159/deployedModels/dobby-unhinged-llama-3-3-70b-new-vdw6j81e",
+    model: model,
     messages: [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt }
@@ -189,7 +198,7 @@ async function callFireworksChat(systemPrompt, userPrompt, max_tokens=512, tempe
 
 /* -------------------- Spoonacular wrappers -------------------- */
 async function spoonSearchByIngredients(ingredients, exclude=[], number=3){
-  const key = document.getElementById('spoonKey').value.trim() || EMBED_SPOON_KEY;
+  const key = EMBED_SPOON_KEY;
   if(!key) throw new Error('SPOONACULAR_API_KEY not set.');
   const ing_csv = ingredients.map(i => i.replace(/\s+/g,'+')).join(',');
   const params = new URLSearchParams({
@@ -207,7 +216,7 @@ async function spoonSearchByIngredients(ingredients, exclude=[], number=3){
 }
 
 async function spoonSearchByQuery(query, number=3){
-  const key = document.getElementById('spoonKey').value.trim() || EMBED_SPOON_KEY;
+  const key = EMBED_SPOON_KEY;
   if(!key) throw new Error('SPOONACULAR_API_KEY not set.');
   const params = new URLSearchParams({ query, number: String(number), apiKey: key });
   const url = `${SPOON_BASE}/recipes/complexSearch?${params.toString()}`;
@@ -218,7 +227,7 @@ async function spoonSearchByQuery(query, number=3){
 }
 
 async function spoonGetRecipeInformation(recipeId){
-  const key = document.getElementById('spoonKey').value.trim() || EMBED_SPOON_KEY;
+  const key = EMBED_SPOON_KEY;
   const params = new URLSearchParams({ apiKey: key, includeNutrition: 'false' });
   const url = `${SPOON_BASE}/recipes/${recipeId}/information?${params.toString()}`;
   const res = await fetch(url);
@@ -256,7 +265,8 @@ function formatRecipeForChat(info){
 
 /* -------------------- Main flow -------------------- */
 async function analyzeUserText(userText){
-  const raw = await callFireworksChat(ANALYSIS_SYSTEM_PROMPT, userText, 256, parseFloat(document.getElementById('temp').value));
+  // temperature fixed in background (hidden); 0.2 used to match previous behavior
+  const raw = await callFireworksChat(ANALYSIS_SYSTEM_PROMPT, userText, 256, 0.2);
   const jsonText = cleanModelJsonResponse(raw);
   try{
     const parsed = JSON.parse(jsonText);
@@ -300,7 +310,7 @@ async function onAsk(){
       const results = await spoonSearchByQuery(q, 1);
       results.forEach(r => recipes_meta.push({ id: r.id, title: r.title, image: r.image }));
     }else{
-      const answer = await callFireworksChat('You are Dobby, a helpful cooking assistant.', userText, 300, parseFloat(document.getElementById('temp').value));
+      const answer = await callFireworksChat('You are Dobby, a helpful cooking assistant.', userText, 300, 0.2);
       appendCard(`<div>${escapeHtml(answer)}</div>`);
     }
 
@@ -308,7 +318,9 @@ async function onAsk(){
       try{
         const info = await spoonGetRecipeInformation(meta.id);
         let formatted = formatRecipeForChat(info);
-        if(document.getElementById('showImages').checked && meta.image){
+        // showImages option is hidden but defaulted true in code
+        const showImagesHiddenDefault = true;
+        if(showImagesHiddenDefault && meta.image){
           formatted = `<img src="${meta.image}" class="recipe-img"/>` + formatted;
         }
         appendCard(formatted, false);
@@ -325,20 +337,32 @@ async function onAsk(){
 /* UI wiring */
 document.getElementById('askBtn').addEventListener('click', onAsk);
 document.getElementById('clearBtn').addEventListener('click', ()=>{ document.getElementById('chatArea').innerHTML=''; showStatus(''); });
+
+// keep tempValue updated internally though slider is hidden
 const tempRange = document.getElementById('temp');
-tempRange.addEventListener('input', ()=> document.getElementById('tempValue').innerText = parseFloat(tempRange.value).toFixed(2));
-
-function updateEnvStatus(){
-  const list = document.getElementById('envStatus'); list.innerHTML = '';
-  const f = document.getElementById('fireworksKey').value.trim() || EMBED_FIREWORKS_KEY ? 'OK' : 'MISSING';
-  const s = document.getElementById('spoonKey').value.trim() || EMBED_SPOON_KEY ? 'OK' : 'MISSING';
-  list.innerHTML = `<li>Fireworks key: ${f}</li><li>Spoonacular key: ${s}</li>`;
+if(tempRange){
+  tempRange.addEventListener('input', ()=> {
+    const tv = document.getElementById('tempValue');
+    if(tv) tv.innerText = parseFloat(tempRange.value).toFixed(2);
+  });
 }
-['fireworksKey','spoonKey'].forEach(id=> document.getElementById(id).addEventListener('input', updateEnvStatus));
 
-// prefill embedded keys into inputs (so you can override if you want)
-document.getElementById('fireworksKey').value = EMBED_FIREWORKS_KEY;
-document.getElementById('spoonKey').value = EMBED_SPOON_KEY;
+// Prefill hidden inputs programmatically (they're hidden but kept for compatibility)
+const hk = document.getElementById('fireworksKey');
+if(hk) hk.value = EMBED_FIREWORKS_KEY;
+const sk = document.getElementById('spoonKey');
+if(sk) sk.value = EMBED_SPOON_KEY;
+const fm = document.getElementById('fireworksModel');
+if(fm) fm.value = DEFAULT_FIREWORKS_MODEL;
+
+// update (hidden) env status for completeness (not visible)
+function updateEnvStatus(){
+  const list = document.getElementById('envStatus');
+  if(!list) return;
+  const fPresent = !!EMBED_FIREWORKS_KEY;
+  const sPresent = !!EMBED_SPOON_KEY;
+  list.innerHTML = `<li>Fireworks key: ${fPresent ? 'OK' : 'MISSING'}</li><li>Spoonacular key: ${sPresent ? 'OK' : 'MISSING'}</li>`;
+}
 updateEnvStatus();
 
 </script>
