@@ -8,3 +8,4 @@ The app is connected to the
  API, which provides real recipe data including ingredients, preparation steps, and images making Dobby’s answers more accurate and realistic.
 Users can control the number of results displayed, while Dobby processes each message dynamically and keeps track of the conversation flow to maintain a natural dialogue.
 @SentientAGI
+<img src="https://raw.githubusercontent.com/ahmed159159/aidobycook/refs/heads/main/New%20Bitmap%20Image.bmp" alt="Project Screenshot" width="600"/>
